@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<!--
+  GitHub Pages serves only static files — a direct visit or refresh on a
+  route like /tutoring/student would normally 404, since there's no real
+  file at that path. This page catches that 404, encodes the path into a
+  query string, and redirects to index.html, which decodes it back (see
+  the script added to index.html) so React Router ends up on the right page.
+  Standard technique: https://github.com/rafgraph/spa-github-pages
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>AXS Tutoring</title>
+    <script type="text/javascript">
+      var pathSegmentsToKeep = 0; // number of path segments before the app's own routes — 0 since this is the axstutoring.github.io root site
+
+      var l = window.location;
+      l.replace(
+        l.protocol + '//' + l.hostname + (l.port ? ':' + l.port : '') +
+        l.pathname.split('/').slice(0, 1 + pathSegmentsToKeep).join('/') + '/?/' +
+        l.pathname.slice(1).split('/').slice(pathSegmentsToKeep).join('/').replace(/&/g, '~and~') +
+        (l.search ? '&' + l.search.slice(1).replace(/&/g, '~and~') : '') +
+        l.hash
+      );
+    </script>
+  </head>
+  <body></body>
+</html>
