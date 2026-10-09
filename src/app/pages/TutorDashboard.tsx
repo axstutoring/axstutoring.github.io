@@ -26,6 +26,7 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import coatOfArms from '../../imports/coat-of-arms.jpg';
+import { Slider } from '../components/ui/slider';
 import {
   getToken,
   clearToken,
@@ -38,6 +39,9 @@ import {
   updateMyClasses,
   updateMyLocations,
   updateMyZoomLink,
+  updateMyMaxHours,
+  formatISODate,
+  pacificNow,
   updateTutorBookingTopics,
   setMyHoldStatus,
   getClasses,
@@ -56,7 +60,7 @@ const SESSIONS_PAGE_SIZE = 6;
 // end time, and sorts each (soonest-first for upcoming, most-recent-first
 // for past) — mirrors StudentDashboard's splitBookings for consistency.
 function splitTutorBookings(bookings: Booking[]): { upcoming: Booking[]; past: Booking[] } {
-  const now = new Date();
+  const now = pacificNow();
   const currentYear = now.getFullYear();
   const upcoming: Booking[] = [];
   const past: Booking[] = [];
@@ -95,6 +99,14 @@ export default function TutorDashboard() {
   const [newCustomLocation, setNewCustomLocation] = useState('');
   const [zoomLinkDraft, setZoomLinkDraft] = useState('');
   const [isSavingZoomLink, setIsSavingZoomLink] = useState(false);
+  // Weekly tutoring-hours cap (1-10, half-hour steps); the draft follows the
+  // slider while dragging and is only sent to the server on release.
+  const [maxHoursDraft, setMaxHoursDraft] = useState(10);
+
+  // Zoom link / location the tutor types in when confirming a session that
+  // doesn't have one yet, keyed by booking id.
+  const [confirmDrafts, setConfirmDrafts] = useState<Record<string, string>>({});
+  const [confirmingId, setConfirmingId] = useState<string | null>(null);
 
   // Editing the "topics to cover" note on an existing booking
   const [editingTopicsId, setEditingTopicsId] = useState<string | null>(null);
@@ -139,6 +151,7 @@ export default function TutorDashboard() {
         setAvailableClasses(classes);
         setAvailableLocations(locations);
         setZoomLinkDraft(tutor.zoomLink || '');
+        setMaxHoursDraft(tutor.maxHoursPerWeek ?? 10);
       } catch {
         toast.error('Your session has expired — please log in again');
         clearToken('tutor');
@@ -155,13 +168,39 @@ export default function TutorDashboard() {
     navigate('/');
   };
 
-  const handleConfirmBooking = async (bookingId: string) => {
+  // A booking made before the tutor had a Zoom link (online) or a meeting
+  // location (in person) set has none yet — the tutor has to type one in to
+  // confirm it. For Zoom, a link already saved on the tutor's profile counts.
+  const missingConfirmDetail = (booking: Booking): 'zoom' | 'location' | null => {
+    if (booking.sessionType === 'online') {
+      return booking.zoomLink || currentTutor?.zoomLink ? null : 'zoom';
+    }
+    return booking.location?.trim() ? null : 'location';
+  };
+
+  const handleConfirmBooking = async (booking: Booking) => {
+    const missing = missingConfirmDetail(booking);
+    const typed = (confirmDrafts[booking._id] || '').trim();
+    if (missing && !typed) {
+      toast.error(missing === 'zoom' ? 'Enter your Zoom link to confirm this session' : 'Enter the meeting location to confirm this session');
+      return;
+    }
+    setConfirmingId(booking._id);
     try {
-      const updated = await confirmBooking(bookingId);
-      setMyBookings((prev) => prev.map((b) => (b._id === bookingId ? updated : b)));
+      const updated = await confirmBooking(
+        booking._id,
+        missing === 'zoom' ? { zoomLink: typed } : missing === 'location' ? { location: typed } : {},
+      );
+      setMyBookings((prev) => prev.map((b) => (b._id === booking._id ? updated : b)));
+      setConfirmDrafts((prev) => {
+        const { [booking._id]: _removed, ...rest } = prev;
+        return rest;
+      });
       toast.success('Session confirmed — the student has been notified');
     } catch (err: any) {
       toast.error('Could not confirm session', { description: err?.message });
+    } finally {
+      setConfirmingId(null);
     }
   };
 
@@ -380,6 +419,18 @@ export default function TutorDashboard() {
     }
   };
 
+  const handleSaveMaxHours = async (hours: number) => {
+    try {
+      const updated = await updateMyMaxHours(hours);
+      setCurrentTutor(updated);
+      setMaxHoursDraft(updated.maxHoursPerWeek ?? hours);
+      toast.success('Weekly hour limit saved');
+    } catch (err: any) {
+      toast.error('Could not save weekly hour limit', { description: err?.message });
+      setMaxHoursDraft(currentTutor?.maxHoursPerWeek ?? 10);
+    }
+  };
+
   const handleToggleHold = async () => {
     if (!currentTutor) return;
     try {
@@ -405,7 +456,7 @@ export default function TutorDashboard() {
 
   // Get the dates for the current week being viewed
   const getWeekDates = (weekOffset: number) => {
-    const today = new Date();
+    const today = pacificNow();
     const currentDay = today.getDay(); // 0 = Sunday, 1 = Monday, etc.
     const diff = currentDay === 0 ? -6 : 1 - currentDay; // Get to Monday
 
@@ -696,7 +747,7 @@ export default function TutorDashboard() {
                         key={index}
                         className="flex items-center justify-between bg-accent/50 px-3 py-2 rounded-lg"
                       >
-                        <span className="text-sm">{new Date(date).toLocaleDateString()}</span>
+                        <span className="text-sm">{formatISODate(date)}</span>
                         <button
                           onClick={() => handleRemoveUnavailableDate(date)}
                           className="p-1 text-destructive hover:bg-destructive/10 rounded transition-colors"
@@ -945,6 +996,38 @@ export default function TutorDashboard() {
               )}
             </div>
 
+            {/* Weekly hour limit */}
+            <div className="bg-card rounded-lg p-6 shadow-md border-2 border-border">
+              <h3 className="font-semibold mb-2 flex items-center gap-2">
+                <Clock className="w-5 h-5 text-primary" />
+                Max Tutoring Hours Per Week
+              </h3>
+              <p className="text-sm text-muted-foreground mb-5">
+                The most hours of sessions you want to take on in a single week. Once pending and confirmed sessions
+                add up to this, students can't book more time with you that week.
+              </p>
+              <div className="flex items-center gap-4">
+                <Slider
+                  min={1}
+                  max={10}
+                  step={0.5}
+                  value={[maxHoursDraft]}
+                  onValueChange={(v) => setMaxHoursDraft(v[0])}
+                  onValueCommit={(v) => {
+                    if (v[0] !== (currentTutor.maxHoursPerWeek ?? 10)) handleSaveMaxHours(v[0]);
+                  }}
+                  aria-label="Max tutoring hours per week"
+                />
+                <span className="w-24 text-right font-semibold text-primary tabular-nums">
+                  {maxHoursDraft} {maxHoursDraft === 1 ? 'hr' : 'hrs'} / wk
+                </span>
+              </div>
+              <div className="flex justify-between text-xs text-muted-foreground mt-2 pr-28">
+                <span>1 hr</span>
+                <span>10 hrs</span>
+              </div>
+            </div>
+
             {/* Zoom Link */}
             <div className="bg-card rounded-lg p-6 shadow-md border-2 border-border">
               <h3 className="font-semibold mb-2 flex items-center gap-2">
@@ -976,7 +1059,7 @@ export default function TutorDashboard() {
               </div>
               {!currentTutor.zoomLink && (
                 <p className="text-xs text-muted-foreground mt-2">
-                  Until you add a link, students won't be able to book online sessions with you.
+                  Until you add a link, students can still book online sessions with you, but you'll have to enter a Zoom link each time you confirm one.
                 </p>
               )}
             </div>
@@ -1106,8 +1189,8 @@ export default function TutorDashboard() {
                           ) : (
                             <div className="flex items-center gap-2 flex-wrap">
                               <MapPin className="w-4 h-4 text-muted-foreground" />
-                              <span><strong>Location:</strong> {booking.location}</span>
-                              {!booking.locationApproved && (
+                              <span><strong>Location:</strong> {booking.location || <span className="text-muted-foreground">Not set yet</span>}</span>
+                              {booking.location && !booking.locationApproved && (
                                 <span className="px-2 py-0.5 text-xs font-medium bg-amber-100 text-amber-700 rounded-full">
                                   Custom — confirming approves it
                                 </span>
@@ -1165,14 +1248,37 @@ export default function TutorDashboard() {
                           {booking.attachmentName}
                         </a>
                       )}
+                      {!booking.confirmed && missingConfirmDetail(booking) && (
+                        <div className="mb-3 p-3 bg-amber-50 border border-amber-200 rounded-lg">
+                          <label htmlFor={`confirm-${booking._id}`} className="block mb-1.5 text-sm font-medium text-amber-900">
+                            {missingConfirmDetail(booking) === 'zoom'
+                              ? 'Add your Zoom link to confirm'
+                              : 'Add the meeting location to confirm'}
+                          </label>
+                          <input
+                            id={`confirm-${booking._id}`}
+                            type={missingConfirmDetail(booking) === 'zoom' ? 'url' : 'text'}
+                            value={confirmDrafts[booking._id] || ''}
+                            onChange={(e) => setConfirmDrafts((prev) => ({ ...prev, [booking._id]: e.target.value }))}
+                            placeholder={missingConfirmDetail(booking) === 'zoom' ? 'https://ucla.zoom.us/j/...' : 'e.g. Powell Library, front steps'}
+                            className="w-full px-3 py-2 bg-input-background border border-border rounded-md text-sm focus:outline-none focus:border-primary"
+                          />
+                          <p className="text-xs text-amber-800 mt-1.5">
+                            {missingConfirmDetail(booking) === 'zoom'
+                              ? "The student booked before you'd set a Zoom link. It will be sent to them when you confirm."
+                              : "The student booked before you'd set any meeting locations. It will be sent to them when you confirm."}
+                          </p>
+                        </div>
+                      )}
                       <div className="flex items-center gap-2 flex-wrap">
                         {!booking.confirmed && (
                           <button
-                            onClick={() => handleConfirmBooking(booking._id)}
-                            className="flex items-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg transition-colors text-sm"
+                            onClick={() => handleConfirmBooking(booking)}
+                            disabled={confirmingId === booking._id}
+                            className="flex items-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg transition-colors text-sm disabled:opacity-50"
                           >
                             <Check className="w-4 h-4" />
-                            Confirm Session
+                            {confirmingId === booking._id ? 'Confirming...' : 'Confirm Session'}
                           </button>
                         )}
                         <button

@@ -12,6 +12,9 @@ import {
   getClasses,
   getAllTutors,
   getTutorBookedSlots,
+  applyWeeklyHourCap,
+  toLocalISODate,
+  pacificNow,
   createBooking,
   getToken,
   getAnnouncement,
@@ -43,12 +46,12 @@ function generateTimeSlotsForTutor(
   bookedSlots: { date: string; startTime: string; endTime: string }[],
 ): { date: string; dateISO: string; startTime: string; endTime: string; available: boolean }[] {
   const slots: { date: string; dateISO: string; startTime: string; endTime: string; available: boolean }[] = [];
-  const today = new Date();
+  const today = pacificNow();
   const daysOfWeek = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'] as const;
 
   // Sessions can only be booked 2–7 days out (closes 2 days before the
   // session starts, and can't be booked more than 7 days in advance).
-  const now = new Date();
+  const now = pacificNow();
   const TWO_DAYS_MS = 2 * 24 * 60 * 60 * 1000;
   const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -58,7 +61,7 @@ function generateTimeSlotsForTutor(
     const dayName = daysOfWeek[date.getDay()];
     const dateString = date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
 
-    const dateISO = date.toISOString().split('T')[0];
+    const dateISO = toLocalISODate(date);
     if (tutor.unavailableDates?.includes(dateISO)) continue;
 
     const dayAvailability = tutor.weeklyAvailability?.[dayName];
@@ -218,22 +221,30 @@ export default function Home() {
         return;
       }
 
-      setClassTutors(availableTutors);
-
       // Pre-fetch every eligible tutor's booked slots up front so the
       // "by time" view (aggregated across all of them) and the "by tutor"
       // view (one tutor's slots, reused from this same fetch) both work
-      // without a second round trip.
-      const withSlots = await Promise.all(
+      // without a second round trip. A tutor who has hit their weekly hour
+      // cap is dropped here, same as a tutor on hold.
+      const fetched = await Promise.all(
         availableTutors.map(async (tutor) => {
           try {
             const bookedSlots = await getTutorBookedSlots(tutor._id);
-            return { tutor, slots: generateTimeSlotsForTutor(tutor, bookedSlots) };
+            const { slots, fullByCap } = applyWeeklyHourCap(tutor, bookedSlots, generateTimeSlotsForTutor(tutor, bookedSlots));
+            return { tutor, slots, fullByCap };
           } catch {
-            return { tutor, slots: [] };
+            return { tutor, slots: [], fullByCap: false };
           }
         }),
       );
+      const withSlots = fetched.filter((t) => !t.fullByCap).map(({ tutor, slots }) => ({ tutor, slots }));
+
+      if (withSlots.length === 0) {
+        navigate('/no-tutors-available', { state: { className, subject: selectedSubject } });
+        return;
+      }
+
+      setClassTutors(withSlots.map((t) => t.tutor));
       setClassTutorSlots(withSlots);
       setCurrentScreen('select-tutor-time');
     } catch {
@@ -306,8 +317,14 @@ export default function Home() {
         attachment: studentData.attachment,
       });
 
+      const awaitingTutorDetail =
+        studentData.sessionType === 'online'
+          ? !selectedTutor.zoomLink && 'the Zoom link'
+          : !studentData.location && 'the meeting location';
       toast.success('Booking confirmed!', {
-        description: 'Confirmation emails have been sent to you and your tutor.',
+        description: awaitingTutorDetail
+          ? `Confirmation emails have been sent. ${selectedTutor.name} will send you ${awaitingTutorDetail} when they confirm your session.`
+          : 'Confirmation emails have been sent to you and your tutor.',
       });
 
       setBookingFormOpen(false);

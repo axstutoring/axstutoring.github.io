@@ -24,6 +24,7 @@ import {
   Megaphone,
   Check,
   ArrowRightLeft,
+  Inbox,
 } from "lucide-react";
 import { toast } from "sonner";
 import coatOfArms from "../../imports/coat-of-arms.jpg";
@@ -61,6 +62,8 @@ import {
   type ReviewSession,
   type AdminStudent,
   type EmailTemplateKey,
+  toLocalISODate,
+  pacificNow,
 } from "../utils/api";
 
 export default function AdminDashboard() {
@@ -68,6 +71,7 @@ export default function AdminDashboard() {
   const [activeTab, setActiveTab] = useState<
     | "tutors"
     | "sessions"
+    | "requested"
     | "past-sessions"
     | "email"
     | "classes"
@@ -78,6 +82,7 @@ export default function AdminDashboard() {
   >("tutors");
   const [tutors, setTutors] = useState<Tutor[]>([]);
   const [bookings, setBookings] = useState<Booking[]>([]);
+  const [requestFilter, setRequestFilter] = useState<"all" | "pending" | "confirmed">("all");
   const [emailTemplates, setEmailTemplates] = useState<Record<EmailTemplateKey, string>>({} as Record<EmailTemplateKey, string>);
   const [selectedTemplateKey, setSelectedTemplateKey] = useState<EmailTemplateKey>('bookingCreatedStudent');
   const [isSavingTemplate, setIsSavingTemplate] = useState(false);
@@ -140,7 +145,7 @@ export default function AdminDashboard() {
   const [isCreatingTutor, setIsCreatingTutor] = useState(false);
 
   // Tutoring report (CSV export) state
-  const today = new Date().toISOString().split('T')[0];
+  const today = toLocalISODate(pacificNow());
   const [reportStartDate, setReportStartDate] = useState(today);
   const [reportEndDate, setReportEndDate] = useState(today);
   const [isDownloadingReport, setIsDownloadingReport] = useState(false);
@@ -309,7 +314,7 @@ export default function AdminDashboard() {
 
   const isSessionPast = (booking: Booking) => {
     try {
-      const currentYear = new Date().getFullYear();
+      const currentYear = pacificNow().getFullYear();
       const dateTimeString = `${booking.date} ${currentYear} ${booking.endTime}`;
       const sessionDateTime = new Date(dateTimeString);
 
@@ -318,7 +323,7 @@ export default function AdminDashboard() {
         return false;
       }
 
-      const now = new Date();
+      const now = pacificNow();
       return sessionDateTime < now;
     } catch (error) {
       console.warn("Error checking if session is past:", error);
@@ -327,7 +332,108 @@ export default function AdminDashboard() {
   };
 
   const upcomingBookings = bookings.filter((b) => !isSessionPast(b));
+  const pendingRequests = upcomingBookings.filter((b) => !b.confirmed);
+
   const pastBookings = bookings.filter((b) => isSessionPast(b));
+
+  // One booking as a card — shared by the Sessions and Requested tabs.
+  const renderSessionCard = (booking: Booking) => (
+        <div
+          key={booking._id}
+          className="bg-card rounded-lg p-6 shadow-md border-2 border-border"
+        >
+          <div className="grid md:grid-cols-2 gap-4">
+            <div>
+              <div className="flex items-center gap-2 flex-wrap mb-3">
+                <h3 className="font-semibold text-lg text-primary">
+                  {booking.class}
+                </h3>
+                {booking.confirmed ? (
+                  <span className="px-2 py-0.5 text-xs font-medium bg-green-100 text-green-700 rounded-full">
+                    Confirmed
+                  </span>
+                ) : (
+                  <span className="px-2 py-0.5 text-xs font-medium bg-amber-100 text-amber-700 rounded-full">
+                    Awaiting tutor
+                  </span>
+                )}
+              </div>
+              <div className="space-y-2 text-sm">
+                <div className="flex items-center gap-2">
+                  <User className="w-4 h-4 text-muted-foreground" />
+                  <span>
+                    <strong>Student:</strong>{" "}
+                    {booking.studentName}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Mail className="w-4 h-4 text-muted-foreground" />
+                  <span>
+                    <strong>Email:</strong>{" "}
+                    {booking.studentEmail}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Users className="w-4 h-4 text-muted-foreground" />
+                  <span>
+                    <strong>Tutor:</strong>{" "}
+                    {booking.tutor}
+                  </span>
+                </div>
+                {booking.tutorEmail && (
+                  <div className="flex items-center gap-2">
+                    <Mail className="w-4 h-4 text-muted-foreground" />
+                    <span>
+                      <strong>Tutor Email:</strong>{" "}
+                      {booking.tutorEmail}
+                    </span>
+                  </div>
+                )}
+              </div>
+            </div>
+            <div>
+              <div className="space-y-2 text-sm">
+                <div className="flex items-center gap-2">
+                  <Calendar className="w-4 h-4 text-muted-foreground" />
+                  <span>
+                    <strong>Date:</strong>{" "}
+                    {booking.date}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Clock className="w-4 h-4 text-muted-foreground" />
+                  <span>
+                    <strong>Time:</strong>{" "}
+                    {booking.startTime} -{" "}
+                    {booking.endTime}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Clock className="w-4 h-4 text-muted-foreground" />
+                  <span>
+                    <strong>Duration:</strong>{" "}
+                    {formatDuration(booking.duration)}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <MapPin className="w-4 h-4 text-muted-foreground" />
+                  <span>
+                    <strong>Location:</strong>{" "}
+                    {booking.location || "Not set yet — tutor will add it when confirming"}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div className="mt-4 pt-4 border-t border-border">
+            <p className="text-sm">
+              <strong>Topics:</strong>{" "}
+              {booking.topics}
+            </p>
+          </div>
+        </div>
+  );
+
 
   const handleDeletePastSession = async (bookingId: string) => {
     try {
@@ -605,7 +711,7 @@ export default function AdminDashboard() {
         dateBase = new Date(y, m - 1, d);
       } else {
         const cleaned = session.date.replace(/^[^,]+,\s*/, "");
-        const currentYear = new Date().getFullYear();
+        const currentYear = pacificNow().getFullYear();
         for (const year of [currentYear, currentYear + 1]) {
           const d = new Date(`${cleaned} ${year}`);
           if (!isNaN(d.getTime())) {
@@ -629,7 +735,7 @@ export default function AdminDashboard() {
         if (period === "PM" && hour !== 12) hour += 12;
         dateBase.setHours(hour, minute, 0, 0);
       }
-      return dateBase < new Date();
+      return dateBase < pacificNow();
     } catch {
       return false;
     }
@@ -892,6 +998,22 @@ export default function AdminDashboard() {
           >
             <Calendar className="w-5 h-5" />
             <span className="hidden sm:inline">Sessions</span>
+          </button>
+          <button
+            onClick={() => setActiveTab("requested")}
+            className={`flex items-center gap-2 px-4 py-3 rounded-lg transition-all ${
+              activeTab === "requested"
+                ? "bg-primary text-primary-foreground shadow-md"
+                : "hover:bg-accent"
+            }`}
+          >
+            <Inbox className="w-5 h-5" />
+            <span className="hidden sm:inline">Requested</span>
+            {pendingRequests.length > 0 && (
+              <span className="ml-1 px-2 py-0.5 text-xs font-bold bg-primary text-white rounded-full">
+                {pendingRequests.length}
+              </span>
+            )}
           </button>
           <button
             onClick={() => setActiveTab("past-sessions")}
@@ -1332,94 +1454,59 @@ export default function AdminDashboard() {
                 </div>
               ) : (
                 upcomingBookings.map((booking) => (
-                  <div
-                    key={booking._id}
-                    className="bg-card rounded-lg p-6 shadow-md border-2 border-border"
-                  >
-                    <div className="grid md:grid-cols-2 gap-4">
-                      <div>
-                        <h3 className="font-semibold text-lg mb-3 text-primary">
-                          {booking.class}
-                        </h3>
-                        <div className="space-y-2 text-sm">
-                          <div className="flex items-center gap-2">
-                            <User className="w-4 h-4 text-muted-foreground" />
-                            <span>
-                              <strong>Student:</strong>{" "}
-                              {booking.studentName}
-                            </span>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <Mail className="w-4 h-4 text-muted-foreground" />
-                            <span>
-                              <strong>Email:</strong>{" "}
-                              {booking.studentEmail}
-                            </span>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <Users className="w-4 h-4 text-muted-foreground" />
-                            <span>
-                              <strong>Tutor:</strong>{" "}
-                              {booking.tutor}
-                            </span>
-                          </div>
-                          {booking.tutorEmail && (
-                            <div className="flex items-center gap-2">
-                              <Mail className="w-4 h-4 text-muted-foreground" />
-                              <span>
-                                <strong>Tutor Email:</strong>{" "}
-                                {booking.tutorEmail}
-                              </span>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                      <div>
-                        <div className="space-y-2 text-sm">
-                          <div className="flex items-center gap-2">
-                            <Calendar className="w-4 h-4 text-muted-foreground" />
-                            <span>
-                              <strong>Date:</strong>{" "}
-                              {booking.date}
-                            </span>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <Clock className="w-4 h-4 text-muted-foreground" />
-                            <span>
-                              <strong>Time:</strong>{" "}
-                              {booking.startTime} -{" "}
-                              {booking.endTime}
-                            </span>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <Clock className="w-4 h-4 text-muted-foreground" />
-                            <span>
-                              <strong>Duration:</strong>{" "}
-                              {formatDuration(booking.duration)}
-                            </span>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <MapPin className="w-4 h-4 text-muted-foreground" />
-                            <span>
-                              <strong>Location:</strong>{" "}
-                              {booking.location}
-                            </span>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                    <div className="mt-4 pt-4 border-t border-border">
-                      <p className="text-sm">
-                        <strong>Topics:</strong>{" "}
-                        {booking.topics}
-                      </p>
-                    </div>
-                  </div>
+                  renderSessionCard(booking)
                 ))
               )}
             </div>
           </div>
         )}
+
+        {/* Requested Sessions Tab — every upcoming request, including ones the tutor hasn't confirmed yet */}
+        {activeTab === "requested" && (() => {
+          const visible = upcomingBookings.filter((b) =>
+            requestFilter === "all" ? true : requestFilter === "confirmed" ? b.confirmed : !b.confirmed,
+          );
+          const filters: { key: "all" | "pending" | "confirmed"; label: string; count: number }[] = [
+            { key: "all", label: "All", count: upcomingBookings.length },
+            { key: "pending", label: "Awaiting tutor", count: pendingRequests.length },
+            { key: "confirmed", label: "Confirmed", count: upcomingBookings.length - pendingRequests.length },
+          ];
+          return (
+            <div className="space-y-6">
+              <h2>Requested Sessions</h2>
+              <p className="text-sm text-muted-foreground -mt-3">
+                Every upcoming session a student has requested, newest request first — including ones the tutor hasn't confirmed yet.
+              </p>
+
+              <div className="flex flex-wrap gap-2">
+                {filters.map((f) => (
+                  <button
+                    key={f.key}
+                    onClick={() => setRequestFilter(f.key)}
+                    className={`px-4 py-2 rounded-lg border-2 text-sm transition-all ${
+                      requestFilter === f.key
+                        ? "border-primary bg-primary/10 text-primary"
+                        : "border-border bg-card hover:border-primary/50"
+                    }`}
+                  >
+                    {f.label} ({f.count})
+                  </button>
+                ))}
+              </div>
+
+              <div className="grid gap-4">
+                {visible.length === 0 ? (
+                  <div className="bg-card rounded-lg p-8 text-center border-2 border-dashed border-border">
+                    <Inbox className="w-12 h-12 text-muted-foreground mx-auto mb-3" />
+                    <p className="text-muted-foreground">No requested sessions here.</p>
+                  </div>
+                ) : (
+                  visible.map((booking) => renderSessionCard(booking))
+                )}
+              </div>
+            </div>
+          );
+        })()}
 
         {/* Past Sessions Tab */}
         {activeTab === "past-sessions" && (

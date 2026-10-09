@@ -125,6 +125,9 @@ export interface Tutor {
   unavailableDates: string[];
   preferredLocations: string[];
   zoomLink: string;
+  // Most tutoring hours per week (1-10, half-hour steps). Missing on older
+  // records, where it means the 10-hour ceiling.
+  maxHoursPerWeek?: number;
   isAdmin: boolean;
   isApproved: boolean;
   cancelCount: number;
@@ -308,9 +311,18 @@ export async function cancelBooking(bookingId: string) {
   return req<{ success: boolean }>(`/api/bookings/${bookingId}`, { method: 'DELETE' }, 'student');
 }
 
-// Tutor confirms a pending booking request.
-export async function confirmBooking(bookingId: string) {
-  return req<Booking>(`/api/tutors/me/bookings/${bookingId}/confirm`, { method: 'PUT' }, 'tutor');
+// Tutor confirms a pending booking request. If the booking has no Zoom link
+// (online) or meeting location (in person) yet, the tutor has to pass one
+// here — the server rejects the confirmation otherwise.
+export async function confirmBooking(
+  bookingId: string,
+  details: { zoomLink?: string; location?: string } = {},
+) {
+  return req<Booking>(
+    `/api/tutors/me/bookings/${bookingId}/confirm`,
+    { method: 'PUT', body: JSON.stringify(details) },
+    'tutor',
+  );
 }
 
 // Tutor cancels one of their own sessions.
@@ -408,8 +420,86 @@ export async function adminApproveTutor(tutorId: string) {
   return adminUpdateTutor(tutorId, { isApproved: true } as Partial<Tutor>);
 }
 
+// This is a UCLA service, so every date and time in the app is Pacific time
+// no matter where the viewer's browser is. pacificNow() is the current
+// Pacific wall-clock time, returned as a Date whose local getters
+// (getDate, getHours, ...) read Pacific values — use it wherever the code
+// needs "now" or "today", and compare it only against other wall-clock
+// Dates built the same way (slot times, session times).
+export function pacificNow(): Date {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Los_Angeles',
+    hourCycle: 'h23',
+    year: 'numeric', month: 'numeric', day: 'numeric',
+    hour: 'numeric', minute: 'numeric', second: 'numeric',
+  }).formatToParts(new Date());
+  const n = (type: string) => Number(parts.find((p) => p.type === type)?.value);
+  return new Date(n('year'), n('month') - 1, n('day'), n('hour'), n('minute'), n('second'));
+}
+
+// "YYYY-MM-DD" for a Date's own (local) calendar day. Don't use
+// date.toISOString().split('T')[0] for this: that's the UTC date, which in the
+// evening (e.g. after 5pm Pacific) is already tomorrow. Pass a Date from
+// pacificNow() (or one derived from it) to get the Pacific day.
+export function toLocalISODate(date: Date): string {
+  const mm = String(date.getMonth() + 1).padStart(2, '0');
+  const dd = String(date.getDate()).padStart(2, '0');
+  return `${date.getFullYear()}-${mm}-${dd}`;
+}
+
+// Shows a stored "YYYY-MM-DD" as that same calendar date. new Date('2026-10-20')
+// is parsed as UTC midnight, so formatting it in a US time zone shows Oct 19.
+export function formatISODate(dateISO: string): string {
+  const [y, m, d] = dateISO.split('-').map(Number);
+  if (!y || !m || !d) return dateISO;
+  return new Date(y, m - 1, d).toLocaleDateString();
+}
+
+export interface BookedSlot {
+  date: string;
+  dateISO?: string;
+  startTime: string;
+  endTime: string;
+  duration?: number;
+}
+
 export async function getTutorBookedSlots(tutorId: string) {
-  return req<{ date: string; startTime: string; endTime: string }[]>(`/api/tutors/${tutorId}/booked-slots`);
+  return req<BookedSlot[]>(`/api/tutors/${tutorId}/booked-slots`);
+}
+
+// Sunday of the week (Sun-Sat) containing a "YYYY-MM-DD" date, as
+// "YYYY-MM-DD" — the same week boundaries the backend uses for its caps.
+function weekStartISO(dateISO: string): string {
+  const [y, m, d] = dateISO.split('-').map(Number);
+  const start = new Date(y, m - 1, d - new Date(y, m - 1, d).getDay());
+  const mm = String(start.getMonth() + 1).padStart(2, '0');
+  const dd = String(start.getDate()).padStart(2, '0');
+  return `${start.getFullYear()}-${mm}-${dd}`;
+}
+
+const SLOT_MINUTES = 30; // the smallest block a student can book
+
+// Applies a tutor's max-hours-per-week cap to their generated slots: any slot
+// in a week where the tutor's existing sessions (pending + confirmed) leave
+// less than one more half hour under the cap is dropped. `fullByCap` is true
+// when the cap is the reason the tutor has nothing left to book — the caller
+// then leaves them off the list, the same as a tutor on hold.
+export function applyWeeklyHourCap<S extends { dateISO: string; available: boolean }>(
+  tutor: Pick<Tutor, 'maxHoursPerWeek'>,
+  bookedSlots: BookedSlot[],
+  slots: S[],
+): { slots: S[]; fullByCap: boolean } {
+  const capMinutes = (tutor.maxHoursPerWeek ?? 10) * 60;
+  const bookedByWeek: Record<string, number> = {};
+  for (const booked of bookedSlots) {
+    if (!booked.dateISO) continue;
+    const minutes = booked.duration ?? Math.max(0, timeToMinutes(booked.endTime) - timeToMinutes(booked.startTime));
+    const week = weekStartISO(booked.dateISO);
+    bookedByWeek[week] = (bookedByWeek[week] || 0) + minutes;
+  }
+  const kept = slots.filter((s) => (bookedByWeek[weekStartISO(s.dateISO)] || 0) + SLOT_MINUTES <= capMinutes);
+  const fullByCap = slots.some((s) => s.available) && !kept.some((s) => s.available);
+  return { slots: kept, fullByCap };
 }
 
 export async function getMyTutorBookings() {
@@ -446,6 +536,15 @@ export async function updateMyLocations(preferredLocations: string[]) {
 // Must be the tutor's UCLA-account Zoom room link.
 export async function updateMyZoomLink(zoomLink: string) {
   return req<Tutor>('/api/tutors/me/zoom', { method: 'PUT', body: JSON.stringify({ zoomLink }) }, 'tutor');
+}
+
+// Most hours of tutoring per week (1-10 in half-hour steps).
+export async function updateMyMaxHours(maxHoursPerWeek: number) {
+  return req<Tutor>(
+    '/api/tutors/me/max-hours',
+    { method: 'PUT', body: JSON.stringify({ maxHoursPerWeek }) },
+    'tutor',
+  );
 }
 
 // Tutor puts themself on/off hold (e.g. going on vacation) — while on hold

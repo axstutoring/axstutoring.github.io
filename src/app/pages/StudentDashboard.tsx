@@ -44,6 +44,9 @@ import {
   getClasses,
   getAllTutors,
   getTutorBookedSlots,
+  applyWeeklyHourCap,
+  toLocalISODate,
+  pacificNow,
   getReviewSessions,
   rsvpToReviewSession,
   UNGROUPED_SUBAREA,
@@ -76,12 +79,12 @@ function generateTimeSlotsForTutor(
   bookedSlots: { date: string; startTime: string; endTime: string }[],
 ): { date: string; dateISO: string; startTime: string; endTime: string; available: boolean }[] {
   const slots: { date: string; dateISO: string; startTime: string; endTime: string; available: boolean }[] = [];
-  const today = new Date();
+  const today = pacificNow();
   const daysOfWeek = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'] as const;
 
   // Sessions can only be booked 2–7 days out (closes 2 days before the
   // session starts, and can't be booked more than 7 days in advance).
-  const now = new Date();
+  const now = pacificNow();
   const TWO_DAYS_MS = 2 * 24 * 60 * 60 * 1000;
   const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -91,7 +94,7 @@ function generateTimeSlotsForTutor(
     const dayName = daysOfWeek[date.getDay()];
     const dateString = date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
 
-    const dateISO = date.toISOString().split('T')[0];
+    const dateISO = toLocalISODate(date);
     if (tutor.unavailableDates?.includes(dateISO)) continue;
 
     const dayAvailability = tutor.weeklyAvailability?.[dayName];
@@ -241,7 +244,7 @@ export default function StudentDashboard() {
   };
 
   const splitBookings = (bookings: Booking[]) => {
-    const now = new Date();
+    const now = pacificNow();
     const currentYear = now.getFullYear();
     const upcoming: Booking[] = [];
     const past: Booking[] = [];
@@ -436,21 +439,29 @@ export default function StudentDashboard() {
         return;
       }
 
-      setBookingTutors(available);
-
       // Pre-fetch every eligible tutor's booked slots up front so both the
       // "by time" (aggregated) and "by tutor" (single-tutor, reused here)
-      // views work without a second round trip.
-      const withSlots = await Promise.all(
+      // views work without a second round trip. A tutor who has hit their
+      // weekly hour cap is dropped here, same as a tutor on hold.
+      const fetched = await Promise.all(
         available.map(async (tutor) => {
           try {
             const bookedSlots = await getTutorBookedSlots(tutor._id);
-            return { tutor, slots: generateTimeSlotsForTutor(tutor, bookedSlots) };
+            const { slots, fullByCap } = applyWeeklyHourCap(tutor, bookedSlots, generateTimeSlotsForTutor(tutor, bookedSlots));
+            return { tutor, slots, fullByCap };
           } catch {
-            return { tutor, slots: [] };
+            return { tutor, slots: [], fullByCap: false };
           }
         }),
       );
+      const withSlots = fetched.filter((t) => !t.fullByCap).map(({ tutor, slots }) => ({ tutor, slots }));
+
+      if (withSlots.length === 0) {
+        navigate('/no-tutors-available', { state: { className, subject: selectedSubject } });
+        return;
+      }
+
+      setBookingTutors(withSlots.map((t) => t.tutor));
       setBookingTutorSlots(withSlots);
       setBookingScreen('select-tutor-time');
     } catch {
@@ -499,16 +510,18 @@ export default function StudentDashboard() {
       return;
     }
 
+    // A tutor with no preferred locations can still be booked in person — the
+    // location is left blank and the tutor supplies it when they confirm.
+    const tutorLocations = selectedBookingTutor.preferredLocations || [];
     let finalLocation = '';
     if (sessionType === 'in-person') {
-      finalLocation = location === OTHER_LOCATION ? customLocation.trim() : location;
-      if (!finalLocation) {
+      finalLocation = tutorLocations.length === 0
+        ? customLocation.trim()
+        : location === OTHER_LOCATION ? customLocation.trim() : location;
+      if (!finalLocation && tutorLocations.length > 0) {
         toast.error('Please choose a location for your in-person session');
         return;
       }
-    } else if (!selectedBookingTutor.zoomLink) {
-      toast.error("This tutor hasn't set up a Zoom link yet — please choose an in-person session instead.");
-      return;
     }
 
     setIsSubmittingBooking(true);
@@ -537,8 +550,14 @@ export default function StudentDashboard() {
 
       setUpcomingBookings((prev) => [...prev, booking]);
 
+      const awaitingTutorDetail =
+        sessionType === 'online'
+          ? !selectedBookingTutor.zoomLink && 'the Zoom link'
+          : !finalLocation && 'the meeting location';
       toast.success('Booking confirmed!', {
-        description: 'Confirmation emails will be sent to you and your tutor',
+        description: awaitingTutorDetail
+          ? `Confirmation emails will be sent. ${selectedBookingTutor.name} will send you ${awaitingTutorDetail} when they confirm your session.`
+          : 'Confirmation emails will be sent to you and your tutor',
       });
 
       // Reset booking flow
@@ -804,8 +823,15 @@ export default function StudentDashboard() {
                           ) : (
                             <div className="flex items-center gap-2 flex-wrap">
                               <MapPin className="w-4 h-4 text-muted-foreground" />
-                              <span><strong>Location:</strong> {booking.location}</span>
-                              {!booking.locationApproved && (
+                              <span>
+                                <strong>Location:</strong>{' '}
+                                {booking.location || (
+                                  <span className="text-muted-foreground">
+                                    The tutor will send the location once they confirm
+                                  </span>
+                                )}
+                              </span>
+                              {booking.location && !booking.locationApproved && (
                                 <span className="px-2 py-0.5 text-xs font-medium bg-amber-100 text-amber-700 rounded-full">
                                   Pending tutor approval
                                 </span>
@@ -1014,7 +1040,7 @@ export default function StudentDashboard() {
                 dateBase = new Date(y, m - 1, d);
               } else {
                 const cleaned = session.date.replace(/^[^,]+,\s*/, '');
-                const currentYear = new Date().getFullYear();
+                const currentYear = pacificNow().getFullYear();
                 for (const year of [currentYear, currentYear + 1]) {
                   const d = new Date(`${cleaned} ${year}`);
                   if (!isNaN(d.getTime())) { dateBase = d; break; }
@@ -1031,7 +1057,7 @@ export default function StudentDashboard() {
                 if (period === 'PM' && hour !== 12) hour += 12;
                 dateBase.setHours(hour, minute, 0, 0);
               }
-              return dateBase < new Date();
+              return dateBase < pacificNow();
             } catch {
               return false;
             }
@@ -1369,9 +1395,7 @@ export default function StudentDashboard() {
                       <button
                         type="button"
                         onClick={() => setSessionType('online')}
-                        disabled={!selectedBookingTutor?.zoomLink}
-                        title={selectedBookingTutor?.zoomLink ? undefined : "This tutor hasn't set up a Zoom link yet"}
-                        className={`px-4 py-3 rounded-lg border-2 transition-all disabled:opacity-50 disabled:cursor-not-allowed ${
+                        className={`px-4 py-3 rounded-lg border-2 transition-all ${
                           sessionType === 'online'
                             ? 'border-primary bg-primary/10 text-primary'
                             : 'border-border bg-card hover:border-primary/50'
@@ -1382,7 +1406,9 @@ export default function StudentDashboard() {
                     </div>
                     {sessionType === 'online' && (
                       <p className="text-xs text-muted-foreground mt-1.5">
-                        The Zoom link will be sent to you once the tutor confirms the session.
+                        {selectedBookingTutor?.zoomLink
+                          ? 'The Zoom link will be sent to you once the tutor confirms the session.'
+                          : "This tutor hasn't set up a Zoom link yet — they'll send you the Zoom link when they confirm the session."}
                       </p>
                     )}
                   </div>
@@ -1390,7 +1416,7 @@ export default function StudentDashboard() {
                   {sessionType === 'in-person' && (
                     <div>
                       <label htmlFor="location" className="block mb-1.5 text-sm">
-                        Location <span className="text-destructive">*</span>
+                        Location {(selectedBookingTutor?.preferredLocations || []).length > 0 && <span className="text-destructive">*</span>}
                       </label>
                       {(selectedBookingTutor?.preferredLocations || []).length > 0 ? (
                         <select
@@ -1410,7 +1436,8 @@ export default function StudentDashboard() {
                         </select>
                       ) : (
                         <p className="text-sm text-muted-foreground mb-2">
-                          This tutor hasn't set preferred locations yet — suggest one below.
+                          This tutor hasn't set preferred locations yet — they'll send you the meeting location when they
+                          confirm the session. You can also suggest one below (optional).
                         </p>
                       )}
                       {((selectedBookingTutor?.preferredLocations || []).length === 0 || location === OTHER_LOCATION) && (
@@ -1423,7 +1450,7 @@ export default function StudentDashboard() {
                             className="w-full px-3 py-2 bg-input-background border border-border rounded-md"
                           />
                           <p className="text-xs text-muted-foreground mt-1">
-                            A custom location needs the tutor's approval — they'll confirm it when they accept the session.
+                            A suggested location needs the tutor's approval — they'll confirm it when they accept the session.
                           </p>
                         </div>
                       )}
@@ -1445,6 +1472,15 @@ export default function StudentDashboard() {
                       e.g. a problem set you'd like to work on. PDF only, up to 8MB.
                     </p>
                   </div>
+
+                  {((sessionType === 'online' && !selectedBookingTutor?.zoomLink) ||
+                    (sessionType === 'in-person' && (selectedBookingTutor?.preferredLocations || []).length === 0)) && (
+                    <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-900">
+                      {sessionType === 'online'
+                        ? `${selectedBookingTutor?.name} will send you the Zoom link when they confirm your session.`
+                        : `${selectedBookingTutor?.name} will send you the meeting location when they confirm your session.`}
+                    </div>
+                  )}
 
                   <div className="flex gap-3 pt-2">
                     <button

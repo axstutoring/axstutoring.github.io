@@ -86,16 +86,17 @@ export default function BookingForm({ isOpen, onClose, tutor, bookingDetails, on
       return;
     }
 
+    // A tutor with no preferred locations can still be booked in person — the
+    // location is left blank and the tutor supplies it when they confirm.
     let finalLocation = '';
     if (sessionType === 'in-person') {
-      finalLocation = location === OTHER_LOCATION ? customLocation.trim() : location;
-      if (!finalLocation) {
+      finalLocation = preferredLocations.length === 0
+        ? customLocation.trim()
+        : location === OTHER_LOCATION ? customLocation.trim() : location;
+      if (!finalLocation && preferredLocations.length > 0) {
         toast.error('Please choose a location for your in-person session');
         return;
       }
-    } else if (!hasZoom) {
-      toast.error("This tutor hasn't set up a Zoom link yet — please choose an in-person session instead.");
-      return;
     }
 
     setIsSubmitting(true);
@@ -191,9 +192,7 @@ export default function BookingForm({ isOpen, onClose, tutor, bookingDetails, on
               <button
                 type="button"
                 onClick={() => setSessionType('online')}
-                disabled={!hasZoom}
-                title={hasZoom ? undefined : "This tutor hasn't set up a Zoom link yet"}
-                className={`px-4 py-3 rounded-lg border-2 transition-all disabled:opacity-50 disabled:cursor-not-allowed ${
+                className={`px-4 py-3 rounded-lg border-2 transition-all ${
                   sessionType === 'online'
                     ? 'border-primary bg-primary/10 text-primary'
                     : 'border-border bg-card hover:border-primary/50'
@@ -204,7 +203,9 @@ export default function BookingForm({ isOpen, onClose, tutor, bookingDetails, on
             </div>
             {sessionType === 'online' && (
               <p className="text-xs text-muted-foreground mt-1.5">
-                The Zoom link will be sent to you once the tutor confirms the session.
+                {hasZoom
+                  ? 'The Zoom link will be sent to you once the tutor confirms the session.'
+                  : "This tutor hasn't set up a Zoom link yet — they'll send you the Zoom link when they confirm the session."}
               </p>
             )}
           </div>
@@ -212,7 +213,7 @@ export default function BookingForm({ isOpen, onClose, tutor, bookingDetails, on
           {sessionType === 'in-person' && (
             <div>
               <label htmlFor="location" className="block mb-1.5 text-sm">
-                Location <span className="text-destructive">*</span>
+                Location {preferredLocations.length > 0 && <span className="text-destructive">*</span>}
               </label>
               {preferredLocations.length > 0 ? (
                 <select
@@ -232,7 +233,8 @@ export default function BookingForm({ isOpen, onClose, tutor, bookingDetails, on
                 </select>
               ) : (
                 <p className="text-sm text-muted-foreground mb-2">
-                  This tutor hasn't set preferred locations yet — suggest one below.
+                  This tutor hasn't set preferred locations yet — they'll send you the meeting location when they
+                  confirm the session. You can also suggest one below (optional).
                 </p>
               )}
               {(preferredLocations.length === 0 || location === OTHER_LOCATION) && (
@@ -245,7 +247,7 @@ export default function BookingForm({ isOpen, onClose, tutor, bookingDetails, on
                     className="w-full px-3 py-2 bg-input-background border border-border rounded-md"
                   />
                   <p className="text-xs text-muted-foreground mt-1">
-                    A custom location needs the tutor's approval — they'll confirm it when they accept the session.
+                    A suggested location needs the tutor's approval — they'll confirm it when they accept the session.
                   </p>
                 </div>
               )}
@@ -268,6 +270,14 @@ export default function BookingForm({ isOpen, onClose, tutor, bookingDetails, on
               e.g. a problem set you'd like to work on. PDF only, up to 8MB.
             </p>
           </div>
+
+          {((sessionType === 'online' && !hasZoom) || (sessionType === 'in-person' && preferredLocations.length === 0)) && (
+            <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-900">
+              {sessionType === 'online'
+                ? `${tutor.name} will send you the Zoom link when they confirm your session.`
+                : `${tutor.name} will send you the meeting location when they confirm your session.`}
+            </div>
+          )}
 
           <div className="flex gap-3 pt-2">
             <button
