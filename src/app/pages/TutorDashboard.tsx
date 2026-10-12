@@ -22,11 +22,13 @@ import {
   Check,
   Video,
   Paperclip,
-  Pencil
+  Pencil,
+  CalendarPlus,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import coatOfArms from '../../imports/coat-of-arms.jpg';
 import { Slider } from '../components/ui/slider';
+import { generateBookingICS, downloadICS } from '../utils/icsUtils';
 import {
   getToken,
   clearToken,
@@ -1279,6 +1281,22 @@ export default function TutorDashboard() {
                           >
                             <Check className="w-4 h-4" />
                             {confirmingId === booking._id ? 'Confirming...' : 'Confirm Session'}
+                          </button>
+                        )}
+                        {booking.confirmed && (
+                          <button
+                            onClick={() => {
+                              const ics = generateBookingICS(booking, 'tutor');
+                              if (ics) {
+                                downloadICS(`tutoring-${booking.class.replace(/\s+/g, '-')}.ics`, ics);
+                              } else {
+                                toast.error('Could not generate calendar file');
+                              }
+                            }}
+                            className="flex items-center gap-2 px-4 py-2 text-primary border border-primary rounded-lg hover:bg-primary/10 transition-colors text-sm"
+                          >
+                            <CalendarPlus className="w-4 h-4" />
+                            Add to Calendar
                           </button>
                         )}
                         <button

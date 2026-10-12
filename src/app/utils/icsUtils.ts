@@ -74,16 +74,35 @@ export function downloadICS(filename: string, content: string): void {
   URL.revokeObjectURL(url);
 }
 
+// Escapes text for an ICS property value: backslashes, semicolons, commas and
+// line breaks would otherwise break the file (a student's free-typed topics
+// can contain any of them).
+function escapeICSText(text: string): string {
+  return (text || '')
+    .replace(/\\/g, '\\\\')
+    .replace(/;/g, '\\;')
+    .replace(/,/g, '\\,')
+    .replace(/\r?\n/g, '\\n');
+}
+
+// `viewer` picks whose side of the session the event describes: students see
+// who their tutor is, tutors see who their student is. For online sessions
+// with a Zoom link, the link becomes the event location (and is repeated in
+// the description) so it's one tap away from the calendar entry.
 export function generateBookingICS(booking: {
   _id: string;
   class: string;
   tutor: string;
+  studentName?: string;
+  studentEmail?: string;
   date: string;
   startTime: string;
   endTime: string;
   location: string;
+  sessionType?: 'in-person' | 'online';
+  zoomLink?: string;
   topics: string;
-}): string | null {
+}, viewer: 'student' | 'tutor' = 'student'): string | null {
   const dateBase = parseBookingDateStr(booking.date);
   if (!dateBase) return null;
 
@@ -98,6 +117,16 @@ export function generateBookingICS(booking: {
 
   const stamp = formatICSStamp();
 
+  const isOnline = booking.sessionType === 'online';
+  const location = isOnline && booking.zoomLink ? booking.zoomLink : booking.location;
+  const descriptionLines = [
+    viewer === 'tutor'
+      ? `Student: ${booking.studentName || 'Unknown'}${booking.studentEmail ? ` (${booking.studentEmail})` : ''}`
+      : `Tutor: ${booking.tutor}`,
+    ...(isOnline && booking.zoomLink ? [`Zoom: ${booking.zoomLink}`] : []),
+    `Topics: ${booking.topics}`,
+  ];
+
   return [
     'BEGIN:VCALENDAR',
     'VERSION:2.0',
@@ -108,9 +137,9 @@ export function generateBookingICS(booking: {
     `DTSTAMP:${stamp}`,
     `DTSTART;TZID=America/Los_Angeles:${formatICSDateTime(startDate)}`,
     `DTEND;TZID=America/Los_Angeles:${formatICSDateTime(endDate)}`,
-    `SUMMARY:Tutoring Session - ${booking.class}`,
-    `DESCRIPTION:Tutor: ${booking.tutor}\\nTopics: ${booking.topics}`,
-    `LOCATION:${booking.location}`,
+    `SUMMARY:${escapeICSText(`Tutoring Session - ${booking.class}`)}`,
+    `DESCRIPTION:${escapeICSText(descriptionLines.join('\n'))}`,
+    `LOCATION:${escapeICSText(location)}`,
     'END:VEVENT',
     'END:VCALENDAR',
   ].join('\r\n');
